@@ -233,6 +233,7 @@ class DartApp:
         self.new_game_button.pack_forget()
         self.clear_winner_buttons()
         self.show_input_widgets()
+        self.reset_ui()
 
     def show_current_scores(self):
         if self.score_visible:
@@ -332,6 +333,28 @@ class DartApp:
         delete_button = tk.Button(top, text="🗑️ Gesamtsiege löschen", command=clear_totals,
                                   bg="#D32F2F", fg="white", font=("Arial", 10))
         delete_button.pack(pady=(0, 10))
+
+    def reset_ui(self):
+        for widget in self.master.winfo_children():
+            widget.pack_forget()
+
+        self.top_frame.pack(pady=10)
+        self.entry.pack(side=tk.LEFT, padx=5)
+        self.add_button.pack(side=tk.LEFT)
+
+        self.start_button.pack(pady=10)
+        self.players_label.pack()
+        self.match_label.config(text="")
+        self.match_label.pack()
+        self.winner_frame.pack(pady=10)
+        self.score_label.config(text="")
+        self.score_label.pack(pady=10)
+
+        self.show_score_button.pack(pady=5)
+        self.show_pairings_button.pack(pady=5)
+        self.history_button.pack(pady=5)
+        self.total_button.pack(pady=5)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
