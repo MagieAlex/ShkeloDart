@@ -1,25 +1,99 @@
+# ShkeloDart – Komplettes Spielsystem (normal + Turnier + Bracket + History + Gesamtsiege)
+
 import tkinter as tk
-from tkinter import messagebox
-import random
+from tkinter import messagebox, ttk
 from datetime import datetime
+import random
 import json
 
-class DartApp:
+from turnier_bracket import canvas
+
+
+class BracketWindow(tk.Toplevel):
+    def __init__(self, master, bracket_data):
+        super().__init__(master)
+        self.title("\U0001F3C6 Turnierbaum")
+        self.geometry("900x600")
+        self.configure(bg="#f0f0f0")
+
+        # Erstelle ein Canvas und einen Scrollbar für die Darstellung
+        canvas = tk.Canvas(self, bg="#f0f0f0")
+        scrollbar = ttk.Scrollbar(self, orient="horizontal", command=canvas.xview)
+        self.bracket_frame = tk.Frame(canvas, bg="#f0f0f0")
+
+        # Vergrößere den sichtbaren Bereich, wenn der Inhalt wächst
+        self.bracket_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.bracket_frame, anchor="nw")
+        canvas.configure(xscrollcommand=scrollbar.set)
+
+        canvas.pack(fill="both", expand=True)
+        scrollbar.pack(fill="x")
+
+        self.draw_bracket(bracket_data)
+
+    def draw_bracket(self, bracket_data):
+        round_width = 170
+        match_height = 60
+        padding = 50
+        vertical_spacing = 150  # Abstand zwischen den Runden
+
+        for r_index, round_matches in enumerate(bracket_data):
+            for m_index, match in enumerate(round_matches):
+                # X-Position: Abhängig von der Runde
+                x = r_index * round_width + 20
+                # Y-Position: Abstand zwischen den Matches
+                y = m_index * match_height + padding * (r_index + 1)
+
+                # Erstelle das Frame für das Match
+                frame = tk.Frame(self.bracket_frame, bg="#ffffff", bd=2, relief="groove")
+                frame.place(x=x, y=y, width=150, height=50)
+
+                p1 = match.get("p1", "")
+                p2 = match.get("p2", "")
+                winner = match.get("winner", None)
+
+                # Hintergrundfarbe für Gewinner und Nicht-Gewinner
+                bg1 = "#DFF0D8" if winner == p1 else "#F9F9F9" if p1 else "#CCCCCC"
+                bg2 = "#DFF0D8" if winner == p2 else "#F9F9F9" if p2 else "#CCCCCC"
+
+                # Label für den ersten Spieler
+                tk.Label(frame, text=p1 or "❓", anchor="w", bg=bg1).pack(fill="x")
+                # Label für den zweiten Spieler
+                tk.Label(frame, text=p2 or "❓", anchor="w", bg=bg2).pack(fill="x")
+
+        # Sicherstellen, dass das Canvas immer den gesamten Bereich anzeigt
+        self.bracket_frame.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox("all"))
+
+
+
+class ShkeloDart:
     def __init__(self, master):
         self.master = master
         self.master.title("ShkeloDart 🎯")
-        self.master.geometry("500x600")
+        self.master.geometry("850x750")
         self.master.configure(bg="#f0f0f0")
 
         self.players = []
         self.scores = {}
-        self.pairings = []
-        self.history = []
         self.total_scores = {}
-        self.score_visible = False
-        self.countdown_after_id = None
+        self.history = []
+        self.pairings = []
+        self.bracket_data = []
+        self.remaining_players = []
+        self.tournament_bracket = []
+        self.current_match = {}
+        self.current_round_matches = []
+        self.tournament_round = 1
+        self.start_score = 501
+        self.mode = "normal"
 
-        self.top_frame = tk.Frame(master, bg="#f0f0f0")
+        self.setup_ui()
+        self.load_history()
+        self.load_totals()
+
+    def setup_ui(self):
+        self.top_frame = tk.Frame(self.master, bg="#f0f0f0")
         self.top_frame.pack(pady=10)
 
         self.entry = tk.Entry(self.top_frame, font=("Arial", 12), width=25)
@@ -29,66 +103,46 @@ class DartApp:
                                     bg="#4CAF50", fg="white", font=("Arial", 10))
         self.add_button.pack(side=tk.LEFT)
 
-        self.start_button = tk.Button(master, text="🎮 Spiel starten", command=self.start_game,
-                                      bg="#2196F3", fg="white", font=("Arial", 11, "bold"))
-        self.start_button.pack(pady=10)
-
-        self.players_label = tk.Label(master, text="Spieler: ", font=("Arial", 11), bg="#f0f0f0")
+        self.players_label = tk.Label(self.master, text="Spieler: ", font=("Arial", 11), bg="#f0f0f0")
         self.players_label.pack()
 
-        self.match_label = tk.Label(master, text="", font=("Arial", 16, "bold"), pady=20, bg="#f0f0f0")
+        self.start_button = tk.Button(self.master, text="🎮 Normales Spiel starten", command=self.start_normal_game,
+                                      bg="#2196F3", fg="white", font=("Arial", 11))
+        self.start_button.pack(pady=5)
+
+        self.tournament_button = tk.Button(self.master, text="🏆 Turnier starten", command=self.setup_tournament,
+                                           bg="#673AB7", fg="white", font=("Arial", 10))
+        self.tournament_button.pack(pady=5)
+
+        self.score_option = tk.IntVar(value=501)
+        tk.Label(self.master, text="Startscore wählen:", bg="#f0f0f0").pack()
+        for val in [301, 501, 701]:
+            tk.Radiobutton(self.master, text=str(val), variable=self.score_option, value=val, bg="#f0f0f0").pack()
+
+        self.match_label = tk.Label(self.master, text="", font=("Arial", 16, "bold"), pady=20, bg="#f0f0f0")
         self.match_label.pack()
 
-        self.winner_frame = tk.Frame(master, bg="#f0f0f0")
+        self.winner_frame = tk.Frame(self.master, bg="#f0f0f0")
         self.winner_frame.pack(pady=10)
 
-        self.score_label = tk.Label(master, text="", font=("Arial", 12), bg="#f0f0f0", justify="left")
+        self.score_label = tk.Label(self.master, text="", font=("Arial", 12), bg="#f0f0f0")
         self.score_label.pack(pady=10)
 
-        self.restart_button = tk.Button(master, text="🔄 Erneut spielen", command=self.restart_game,
-                                        bg="#9C27B0", fg="white", font=("Arial", 10))
-        self.restart_button.pack(pady=10)
-        self.restart_button.pack_forget()
+        self.bracket_btn = tk.Button(self.master, text="📈 Turnierbaum anzeigen", command=self.show_bracket,
+                                     bg="#03A9F4", fg="white", font=("Arial", 10))
+        self.bracket_btn.pack(pady=5)
 
-        self.new_game_button = tk.Button(master, text="🧼 Neues Spiel starten", command=self.new_game,
-                                         bg="#E53935", fg="white", font=("Arial", 10))
-        self.new_game_button.pack(pady=5)
-        self.new_game_button.pack_forget()
+        self.history_btn = tk.Button(self.master, text="📜 History anzeigen", command=self.show_history,
+                                     bg="#795548", fg="white", font=("Arial", 10))
+        self.history_btn.pack(pady=5)
 
-        self.show_score_button = tk.Button(master, text="📊 Spielstand anzeigen", command=self.show_current_scores,
-                                           bg="#607D8B", fg="white", font=("Arial", 10))
+        self.total_btn = tk.Button(self.master, text="🏅 Gesamtsiege anzeigen", command=self.show_totals,
+                                   bg="#388E3C", fg="white", font=("Arial", 10))
+        self.total_btn.pack(pady=5)
 
-        self.show_pairings_button = tk.Button(master, text="📝 Paarungen anzeigen", command=self.show_pairing_preview,
-                                              bg="#FFA000", fg="white", font=("Arial", 10))
-
-        self.history_button = tk.Button(master, text="📜 History anzeigen", command=self.show_history,
-                                        bg="#795548", fg="white", font=("Arial", 10))
-
-        self.total_button = tk.Button(master, text="🏅 Gesamtsiege anzeigen", command=self.show_totals,
-                                      bg="#388E3C", fg="white", font=("Arial", 10))
-
-        self.place_control_buttons()
-
-        self.load_history()
-        self.load_totals()
-
-    def place_control_buttons(self):
-        self.show_score_button.pack(pady=5)
-        self.show_pairings_button.pack(pady=5)
-        self.history_button.pack(pady=5)
-        self.total_button.pack(pady=5)
-
-    def hide_input_widgets(self):
-        self.entry.pack_forget()
-        self.add_button.pack_forget()
-        self.start_button.pack_forget()
-        self.players_label.pack_forget()
-
-    def show_input_widgets(self):
-        self.entry.pack(side=tk.LEFT, padx=5)
-        self.add_button.pack(side=tk.LEFT)
-        self.start_button.pack(pady=10)
-        self.players_label.pack()
+        self.reset_btn = tk.Button(self.master, text="🧼 Neues Spiel starten", command=self.reset_ui,
+                                   bg="#E53935", fg="white", font=("Arial", 10))
+        self.reset_btn.pack(pady=10)
 
     def add_player(self):
         name = self.entry.get().strip()
@@ -96,207 +150,193 @@ class DartApp:
             self.players.append(name)
             self.scores[name] = 0
             self.entry.delete(0, tk.END)
-            self.update_player_list()
-        else:
-            messagebox.showinfo("Fehler", "Name ist leer oder bereits hinzugefügt.")
+            self.players_label.config(text="Spieler: " + ", ".join(self.players))
 
-    def update_player_list(self):
-        self.players_label.config(text="Spieler: " + ", ".join(self.players))
-
-    def start_game(self):
+    def start_normal_game(self):
         if len(self.players) < 2:
             messagebox.showinfo("Fehler", "Mindestens zwei Spieler erforderlich.")
             return
-
+        self.mode = "normal"
         self.pairings = self.generate_pairings()
-        self.clear_winner_buttons()
-        self.hide_input_widgets()
-        self.score_label.config(text="")
-        self.restart_button.pack_forget()
-        self.new_game_button.pack_forget()
-        self.show_pairing_preview(autostart=True)
-
-    def show_pairing_preview(self, autostart=False):
-        if not self.pairings:
-            messagebox.showinfo("Keine Paarungen", "Es konnten keine gültigen Paarungen erzeugt werden.")
-            return
-
-        preview_text = "\n".join(f"{i+1}. {p1} vs. {p2}" for i, (p1, p2) in enumerate(self.pairings))
-
-        top = tk.Toplevel(self.master)
-        top.title("📝 Anstehende Paarungen")
-        top.geometry("400x300")
-        top.resizable(False, False)
-
-        label = tk.Label(top, text="Anstehende Paarungen", font=("Arial", 14, "bold"))
-        label.pack(pady=10)
-
-        if autostart:
-            sublabel = tk.Label(top, text="Spiel startet in 5 Sekunden...", font=("Arial", 10))
-            sublabel.pack(pady=(0, 10))
-
-        text = tk.Text(top, wrap="word", font=("Arial", 11))
-        text.insert("1.0", preview_text)
-        text.config(state="disabled")
-        text.pack(expand=True, fill="both", padx=10, pady=10)
-
-        def update_countdown(seconds):
-            if seconds > 0:
-                self.countdown_after_id = top.after(1000, lambda: update_countdown(seconds - 1))
-            else:
-                top.destroy()
-                self.show_next_pairing()
-
-        def on_close_preview():
-            if self.countdown_after_id:
-                try:
-                    top.after_cancel(self.countdown_after_id)
-                except Exception:
-                    pass
-            top.destroy()
-
-        top.protocol("WM_DELETE_WINDOW", on_close_preview)
-
-        if autostart:
-            update_countdown(5)
+        self.next_match()
 
     def generate_pairings(self):
-        shuffled = self.players[:]
-        random.shuffle(shuffled)
-        return [(shuffled[i], shuffled[i + 1]) for i in range(0, len(shuffled) - 1, 2)]
+        p = self.players[:]
+        random.shuffle(p)
+        return [(p[i], p[i + 1]) for i in range(0, len(p) - 1, 2)]
 
-    def show_next_pairing(self):
-        self.clear_winner_buttons()
+    def next_match(self):
+        for widget in self.winner_frame.winfo_children():
+            widget.destroy()
 
         if not self.pairings:
-            self.show_scores()
+            self.end_game()
             return
 
         p1, p2 = self.pairings.pop(0)
-        self.match_label.config(text=f"{p1} 🎯 vs. 🎯 {p2}")
+        self.match_label.config(text=f"{p1} 🎯 vs 🎯 {p2}")
 
-        btn1 = tk.Button(self.winner_frame, text=f"🏆 {p1} gewinnt", command=lambda: self.declare_winner(p1),
-                         bg="#FF9800", fg="white", font=("Arial", 10), width=18)
-        btn1.pack(side=tk.LEFT, padx=10)
-
-        btn2 = tk.Button(self.winner_frame, text=f"🏆 {p2} gewinnt", command=lambda: self.declare_winner(p2),
-                         bg="#FF9800", fg="white", font=("Arial", 10), width=18)
-        btn2.pack(side=tk.LEFT, padx=10)
-
-    def clear_winner_buttons(self):
-        for widget in self.winner_frame.winfo_children():
-            widget.destroy()
+        tk.Button(self.winner_frame, text=f"🏆 {p1} gewinnt", command=lambda: self.declare_winner(p1),
+                  bg="#FF9800", fg="white", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.winner_frame, text=f"🏆 {p2} gewinnt", command=lambda: self.declare_winner(p2),
+                  bg="#FF9800", fg="white", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
 
     def declare_winner(self, winner):
         self.scores[winner] += 1
         self.total_scores[winner] = self.total_scores.get(winner, 0) + 1
         self.save_totals()
+        self.next_match()
 
-        if self.pairings:
-            self.show_next_pairing()
-        else:
-            self.show_scores()
-
-    def show_scores(self):
-        self.clear_winner_buttons()
-        sorted_scores = sorted(self.scores.items(), key=lambda x: -x[1])
-        score_text = "\n".join(f"{i + 1}. {name}: {wins} Siege" for i, (name, wins) in enumerate(sorted_scores))
+    def end_game(self):
+        score_text = "\n".join(f"{i+1}. {name}: {pts} Siege" for i, (name, pts) in enumerate(
+            sorted(self.scores.items(), key=lambda x: -x[1])
+        ))
         timestamp = datetime.now().strftime("%d.%m.%Y – %H:%M Uhr")
-        full_entry = f"{timestamp}\n🏁 Endstand:\n\n{score_text}"
-        self.score_label.config(text=full_entry)
+        result = f"{timestamp}\n🏁 Endstand:\n\n{score_text}"
+        self.history.append(result)
+        self.score_label.config(text=result)
         self.match_label.config(text="🎉 Spiel beendet!")
-        self.restart_button.pack()
-        self.new_game_button.pack()
-        self.history.append(full_entry)
 
-    def restart_game(self):
-        for name in self.players:
-            self.scores[name] = 0
-        self.score_label.config(text="")
-        self.score_visible = False
-        self.match_label.config(text="")
-        self.restart_button.pack_forget()
-        self.new_game_button.pack_forget()
-        self.clear_winner_buttons()
-        self.start_game()
+    def setup_tournament(self):
+        if len(self.players) < 2:
+            messagebox.showinfo("Fehler", "Mindestens zwei Spieler erforderlich.")
+            return
 
-    def new_game(self):
+        self.start_score = self.score_option.get()
+        self.mode = "tournament"
+        self.remaining_players = self.players[:]
+        self.tournament_round = 1
+        self.bracket_data = []
+        self.prepare_next_round()
+
+    def prepare_next_round(self):
+        self.match_label.config(text=f"Turnierrunde {self.tournament_round}")
+        self.current_round_matches = []
+        players = self.remaining_players[:]
+        random.shuffle(players)
+        self.remaining_players = []
+
+        if len(players) % 2 == 1:
+            bye = players.pop()
+            self.remaining_players.append(bye)
+            self.current_round_matches.append({"p1": bye, "p2": "Freilos", "winner": bye})
+
+        while players:
+            p1 = players.pop()
+            p2 = players.pop()
+            self.current_round_matches.append({"p1": p1, "p2": p2, "winner": None})
+
+        self.bracket_data.append(self.current_round_matches)
+        self.tournament_bracket = self.current_round_matches[:]
+        self.start_next_match()
+
+    def declare_tournament_winner(self, winner):
+        for match in self.current_round_matches:
+            if winner in (match["p1"], match["p2"]) and match["winner"] is None:
+                match["winner"] = winner
+                break
+        self.remaining_players.append(winner)
+        self.start_next_match()
+
+    def start_next_match(self):
+        for widget in self.winner_frame.winfo_children():
+            widget.destroy()
+
+        if not self.tournament_bracket:
+            if len(self.remaining_players) == 1:
+                winner = self.remaining_players[0]
+                self.match_label.config(text=f"🏆 {winner} ist Turniersieger!")
+                self.total_scores[winner] = self.total_scores.get(winner, 0) + 1
+                self.save_totals()
+            else:
+                self.tournament_round += 1
+                self.prepare_next_round()
+            return
+
+        match = self.tournament_bracket.pop(0)
+        if match["p2"] == "Freilos":
+            self.start_next_match()
+            return
+
+        self.current_match = match
+        p1, p2 = match["p1"], match["p2"]
+        scores = {p1: self.start_score, p2: self.start_score}
+        turn = p1
+
+        def update():
+            for widget in self.winner_frame.winfo_children():
+                widget.destroy()
+
+            self.match_label.config(text=f"{p1} ({scores[p1]}) 🎯 vs 🎯 {p2} ({scores[p2]})")
+            tk.Label(self.winner_frame, text=f"{turn} ist am Zug:").pack()
+            entry = tk.Entry(self.winner_frame)
+            entry.pack()
+
+            def submit():
+                nonlocal turn
+                try:
+                    val = int(entry.get())
+                    scores[turn] -= val
+                    if scores[turn] == 0:
+                        self.declare_tournament_winner(turn)
+                    elif scores[turn] < 0:
+                        scores[turn] += val
+                        messagebox.showinfo("Ungültig", "Punkte überschritten!")
+                    else:
+                        turn = p1 if turn == p2 else p2
+                        update()
+                except:
+                    messagebox.showinfo("Fehler", "Ungültige Eingabe")
+
+            tk.Button(self.winner_frame, text="Punkte abziehen", command=submit, bg="#FF9800").pack(pady=5)
+
+        update()
+
+    def show_bracket(self):
+        if not self.bracket_data:
+            messagebox.showinfo("Fehler", "Noch kein Turnierbaum vorhanden.")
+            return
+        BracketWindow(self.master, self.bracket_data)
+
+    def reset_ui(self):
         self.players = []
         self.scores = {}
-        self.pairings = []
-        self.score_label.config(text="")
-        self.score_visible = False
-        self.match_label.config(text="")
-        self.entry.delete(0, tk.END)
         self.players_label.config(text="Spieler: ")
-        self.restart_button.pack_forget()
-        self.new_game_button.pack_forget()
-        self.clear_winner_buttons()
-        self.show_input_widgets()
-        self.reset_ui()
-
-    def show_current_scores(self):
-        if self.score_visible:
-            self.score_label.config(text="")
-            self.show_score_button.config(text="📊 Spielstand anzeigen")
-            self.score_visible = False
-        else:
-            sorted_scores = sorted(self.scores.items(), key=lambda x: -x[1])
-            score_text = "📊 Aktueller Spielstand:\n\n" + "\n".join(
-                f"{i + 1}. {name}: {wins} Siege" for i, (name, wins) in enumerate(sorted_scores)
-            )
-            self.score_label.config(text=score_text)
-            self.show_score_button.config(text="❌ Spielstand verstecken")
-            self.score_visible = True
+        self.entry.delete(0, tk.END)
+        self.score_label.config(text="")
+        self.match_label.config(text="")
+        for w in self.winner_frame.winfo_children():
+            w.destroy()
 
     def show_history(self):
         if not self.history:
-            messagebox.showinfo("Keine History", "Es wurden noch keine Spiele abgeschlossen.")
+            messagebox.showinfo("Hinweis", "Noch keine Spiele gespielt.")
             return
-
-        def clear_history():
-            if messagebox.askyesno("History löschen", "Willst du wirklich die gesamte History löschen?"):
-                self.history.clear()
-                top.destroy()
-                messagebox.showinfo("Gelöscht", "Die Spiel-History wurde gelöscht.")
-
-        history_text = "\n\n====================\n\n".join(self.history)
         top = tk.Toplevel(self.master)
         top.title("📜 Spiel-History")
-        top.geometry("500x500")
-        top.minsize(400, 400)
-
-        text_widget = tk.Text(top, wrap="word", font=("Arial", 10))
-        text_widget.insert("1.0", history_text)
+        text_widget = tk.Text(top)
+        text_widget.insert("1.0", "\n\n====================\n\n".join(self.history))
         text_widget.config(state="disabled")
-        text_widget.pack(expand=True, fill="both", padx=10, pady=10)
+        text_widget.pack(expand=True, fill="both")
 
-        delete_button = tk.Button(top, text="🗑️ History löschen", command=clear_history, bg="#F44336",
-                                  fg="white", font=("Arial", 10))
-        delete_button.pack(pady=(0, 10))
-
-    def save_history(self):
-        try:
-            with open("history.txt", "w", encoding="utf-8") as f:
-                for entry in self.history:
-                    f.write(entry + "\n\n---\n\n")
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler beim Speichern der History:\n{e}")
-
-    def load_history(self):
-        try:
-            with open("history.txt", "r", encoding="utf-8") as f:
-                raw = f.read()
-                self.history = [block.strip() for block in raw.split("\n\n---\n\n") if block.strip()]
-        except FileNotFoundError:
-            self.history = []
+    def show_totals(self):
+        if not self.total_scores:
+            messagebox.showinfo("Hinweis", "Noch keine Statistik vorhanden.")
+            return
+        top = tk.Toplevel(self.master)
+        top.title("🏅 Gesamtsiege")
+        text_widget = tk.Text(top)
+        text_widget.insert("1.0", "\n".join(
+            f"{i+1}. {name}: {score} Gesamtsiege" for i, (name, score) in enumerate(
+                sorted(self.total_scores.items(), key=lambda x: -x[1])
+            )
+        ))
+        text_widget.config(state="disabled")
+        text_widget.pack(expand=True, fill="both")
 
     def save_totals(self):
-        try:
-            with open("totals.json", "w", encoding="utf-8") as f:
-                json.dump(self.total_scores, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler beim Speichern der Gesamtstatistik:\n{e}")
+        with open("totals.json", "w", encoding="utf-8") as f:
+            json.dump(self.total_scores, f, ensure_ascii=False, indent=2)
 
     def load_totals(self):
         try:
@@ -305,65 +345,16 @@ class DartApp:
         except FileNotFoundError:
             self.total_scores = {}
 
-    def show_totals(self):
-        if not self.total_scores:
-            messagebox.showinfo("Noch keine Statistik", "Es wurden noch keine Siege gespeichert.")
-            return
-
-        def clear_totals():
-            if messagebox.askyesno("Gesamtsiege löschen", "Willst du wirklich alle Gesamtsiege löschen?"):
-                self.total_scores.clear()
-                self.save_totals()
-                top.destroy()
-                messagebox.showinfo("Gelöscht", "Die Gesamtsiege wurden gelöscht.")
-
-        sorted_totals = sorted(self.total_scores.items(), key=lambda x: -x[1])
-        text = "\n".join(f"{i+1}. {name}: {wins} Gesamtsiege" for i, (name, wins) in enumerate(sorted_totals))
-
-        top = tk.Toplevel(self.master)
-        top.title("🏅 Gesamtsiege")
-        top.geometry("400x400")
-        top.minsize(300, 300)
-
-        text_widget = tk.Text(top, wrap="word", font=("Arial", 10))
-        text_widget.insert("1.0", text)
-        text_widget.config(state="disabled")
-        text_widget.pack(expand=True, fill="both", padx=10, pady=(10, 5))
-
-        delete_button = tk.Button(top, text="🗑️ Gesamtsiege löschen", command=clear_totals,
-                                  bg="#D32F2F", fg="white", font=("Arial", 10))
-        delete_button.pack(pady=(0, 10))
-
-    def reset_ui(self):
-        for widget in self.master.winfo_children():
-            widget.pack_forget()
-
-        self.top_frame.pack(pady=10)
-        self.entry.pack(side=tk.LEFT, padx=5)
-        self.add_button.pack(side=tk.LEFT)
-
-        self.start_button.pack(pady=10)
-        self.players_label.pack()
-        self.match_label.config(text="")
-        self.match_label.pack()
-        self.winner_frame.pack(pady=10)
-        self.score_label.config(text="")
-        self.score_label.pack(pady=10)
-
-        self.show_score_button.pack(pady=5)
-        self.show_pairings_button.pack(pady=5)
-        self.history_button.pack(pady=5)
-        self.total_button.pack(pady=5)
+    def load_history(self):
+        try:
+            with open("history.txt", "r", encoding="utf-8") as f:
+                raw = f.read()
+                self.history = [h.strip() for h in raw.split("\n\n---\n\n") if h.strip()]
+        except FileNotFoundError:
+            self.history = []
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = DartApp(root)
-
-    def on_close():
-        app.save_history()
-        app.save_totals()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
+    app = ShkeloDart(root)
     root.mainloop()
